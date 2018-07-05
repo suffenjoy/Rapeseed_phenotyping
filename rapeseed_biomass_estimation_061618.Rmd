@@ -1,0 +1,386 @@
+---
+title: "rapeseed_preliminary"
+author: "Zhehan Tang"
+date: "June 26, 2018"
+output: html_document
+---
+
+```{r}
+library(rgdal)
+library(raster)
+library(Hmisc)
+library(dplyr)
+library(caret)
+```
+
+#read average data of every two blocks of ground measurement
+```{r}
+path_survey <- "C:/Users/zt92/Desktop/rapeseed_phenotyping"
+ave_survey <- read.csv(file.path(path_survey, "average_survey_rapeseed.csv"))
+names(ave_survey) <- c("block","height","width","weight","inflorlength","siliquenum","seedweight")
+
+rcorr(as.matrix(ave_survey[,c(2:7)]))
+```
+
+#more ground survey data
+```{r}
+path_survey <- "C:/Users/zt92/Desktop/rapeseed_phenotyping"
+ground_survey <- read.csv(file.path(path_survey, "growth_survey_rapeseed.csv"))
+names(ground_survey) <- c("ID","height","width","weight","inflorlength","siliquenum","seedweight","seednum")
+head(ground_survey)
+tail(ground_survey)
+ground_survey <- ground_survey[1:103,]
+ground_survey$ID <- as.character(ground_survey$ID)
+ground_survey$height <- as.numeric(ground_survey$height)
+ground_survey$width <- as.numeric(ground_survey$width)
+str(ground_survey)
+
+#add a column of block
+ground_survey$block <- unlist(lapply(strsplit(ground_survey$ID, split = "-"), '[', 1))
+
+#add a column of harvest index
+ground_survey$HI <- ground_survey$seedweight/ground_survey$weight
+hist(ground_survey$HI)
+#HI can only be smaller than 1
+rapeseed_HI <- ground_survey$HI[ground_survey$HI <1]
+hist(rapeseed_HI)
+
+plot(x = ground_survey$height, y = ground_survey$weight)
+plot(x = ground_survey$width, y = ground_survey$weight)
+rcorr(as.matrix(ground_survey[,c(2,3,4,5,6)]))
+
+```
+
+#average over blocks
+```{r}
+
+ground_survey_byblock <- ground_survey %>% group_by(block)
+ground_ave <- summarise(ground_survey_byblock, height = mean(height,na.rm = TRUE), width = mean(width,na.rm = TRUE), weight = mean(weight,na.rm = TRUE), inflorlength = mean(inflorlength,na.rm = TRUE), siliquenum = mean(siliquenum,na.rm = TRUE), seedweight = mean(seedweight,na.rm = TRUE))
+str(ground_ave)
+rcorr(as.matrix(ground_ave[,2:7]))
+
+```
+
+#read raster of 20180616
+```{r}
+path_rasters <- "E:/rapeseed phenotyping 20180616/processed results"
+K037_stacks <- brick(file.path(path_rasters, "K037_061618_stacks"))
+K038_stacks <- brick(file.path(path_rasters, "K038_061618_stacks"))
+K039_stacks <- brick(file.path(path_rasters, "K039_061618_stacks"))
+K040_stacks <- brick(file.path(path_rasters, "K040_061618_stacks"))
+K041_stacks <- brick(file.path(path_rasters, "K041_061618_stacks"))
+K042_stacks <- brick(file.path(path_rasters, "K042_061618_stacks"))
+
+names(K037_stacks) <- c("blue","green","red","rededge","nir","ndvi","dsm")
+
+
+mean(getValues(K037_stacks[[6]]))
+mean(getValues(K038_stacks[[6]]))
+mean(getValues(K039_stacks[[6]]))
+mean(getValues(K040_stacks[[6]]))
+mean(getValues(K041_stacks[[6]]))
+mean(getValues(K042_stacks[[6]]))
+
+median(getValues(K037_stacks[[6]]))
+median(getValues(K038_stacks[[6]]))
+median(getValues(K039_stacks[[6]]))
+median(getValues(K040_stacks[[6]]))
+median(getValues(K041_stacks[[6]]))
+median(getValues(K042_stacks[[6]]))
+
+
+```
+
+
+
+#block NDVI histogram
+```{r}
+par(mfrow = c(3,2))
+hist(K037_stacks[[6]], main = "K037", xlab = "NDVI",xlim = c(0.1,0.7))
+hist(K038_stacks[[6]], main = "K038", xlab = "NDVI",xlim = c(0.1,0.7))
+hist(K039_stacks[[6]], main = "K039", xlab = "NDVI",xlim = c(0.1,0.7))
+hist(K040_stacks[[6]], main = "K040", xlab = "NDVI",xlim = c(0.1,0.7))
+hist(K041_stacks[[6]], main = "K041", xlab = "NDVI",xlim = c(0.1,0.7))
+hist(K042_stacks[[6]], main = "K042", xlab = "NDVI",xlim = c(0.1,0.7))
+
+```
+
+#some indices
+```{r}
+#ndvi
+ndvi <- function(uav){
+  ndvi <- (uav$nir-uav$red)/(uav$nir+uav$red)
+  return(ndvi)
+} 
+
+#savi
+savi <- function(uav){
+  band_nir <- uav$nir
+  band_red <- uav$red
+  savi <- 1.5*(band_nir-band_red)/(band_nir+band_red+0.5)
+  return(savi)
+}
+
+#osavi
+osavi <- function(uav){
+  nir <- uav$nir
+  red <- uav$red
+  osavi <- (1+0.16)*(nir-red)/(nir+red+0.16)
+  return(osavi)
+}
+
+#msavi 
+msavi <- function(uav){
+  nir <- uav$nir
+  red <- uav$red
+  msavi <- 0.5*(2*nir+1-sqrt((2*nir+1)^2-8*(nir-red)))
+  return(msavi)
+}
+
+#grvi
+grvi <- function(uav){
+  green <- uav$green
+  red <- uav$red
+  grvi <- (green-red)/(green+red)
+  return(grvi)
+}
+
+#mgrvi
+mgrvi <- function(uav){
+  green <- uav$green
+  red <- uav$red
+  mgrvi <- (green^2-red^2)/(red^2+green^2)
+  return(mgrvi)
+}
+
+#rgbvi
+rgbvi <- function(uav){
+  green <- uav$green
+  blue <- uav$blue
+  red <- uav$red
+  rgbvi <- (green^2-blue*red)/(green^2+blue*red)
+  return(rgbvi)
+}
+```
+
+#Read rasters of phenofield
+```{r}
+path_phenofield <- "C:/Users/zt92/Desktop/rapeseed_phenotyping/stack tiff"
+rap_0226 <- brick(file.path(path_phenofield, "rapeseed_022618_pheno.tif"))
+rap_0501 <- brick(file.path(path_phenofield, "rapeseed_050118_pheno.tif"))
+rap_0519 <- brick(file.path(path_phenofield, "rapeseed_051918_pheno.tif"))
+
+#change the name of raster
+names(rap_0226) <- c("blue","green","red","rededge","nir","ndvi","dsm")
+names(rap_0501) <- c("blue","green","red","rededge","nir","ndvi","dsm")
+names(rap_0519) <- c("blue","green","red","rededge","nir","ndvi","dsm")
+```
+
+
+```{r}
+#read shapefile
+path_shapefile <- "C:/Users/zt92/Desktop/rapeseed_phenotyping/shapefiles"
+shp_names <- list.files(path_shapefile, pattern = "\\.shp$", full.names = TRUE)
+shp_list <- lapply(shp_names, shapefile)
+names(shp_list) <- tools::file_path_sans_ext(list.files(path_shapefile, pattern = "\\.shp$", full.names = FALSE))
+
+#mask with NDVI value >0.2
+rap_0226_masked <- raster::mask(rap_0226, rap_0226$ndvi>0.2)
+rap_0501_masked <- raster::mask(rap_0501, rap_0501$ndvi>0.2)
+rap_0519_masked <- raster::mask(rap_0519, rap_0519$ndvi>0.2)
+
+
+#mask with shapefiles
+list_0501 <- lapply(shp_list, function(x) raster::mask(rap_0501,x ))
+raster::extract(rap_0501, shp_list[[1]], fun = mean, na.rm=TRUE)
+
+#extract mean
+##0501
+extract_0501_mean <- lapply(shp_list, function(x) raster::extract(rap_0501_masked, x, fun=mean, na.rm = TRUE))
+extract_0501_mean <- as.data.frame(do.call(rbind, extract_0501_mean))
+extract_0501_mean$block <- names(shp_list)
+##0519
+extract_0519_mean <- lapply(shp_list, function(x) raster::extract(rap_0519_masked, x, fun=mean, na.rm = TRUE))
+extract_0519_mean <- as.data.frame(do.call(rbind, extract_0519_mean))
+extract_0519_mean$block <- names(shp_list)
+```
+
+#dsm generate plant height
+```{r}
+top_0501 <- lapply(shp_list, function(x) raster::extract(rap_0501$dsm, x, fun=max, na.rm=TRUE))
+low_0501 <- lapply(shp_list, function(x) raster::extract(rap_0501$dsm, x, fun=min, na.rm=TRUE))
+
+
+#0519
+top_0519 <- lapply(shp_list, function(x) raster::extract(rap_0519$dsm, x, fun=max, na.rm=TRUE))
+low_0519 <- lapply(shp_list, function(x) raster::extract(rap_0519$dsm, x, fun=min, na.rm=TRUE))
+PH_0519 <- as.data.frame(do.call(rbind, top_0519)-do.call(rbind, low_0519))
+PH_0519$block <- names(top_0519)
+df_PH_0519 <- merge(PH_0519, ave_survey[,1:2], by = "block")
+df_PH_0519$height = df_PH_0519$height/100
+names(df_PH_0519) <- c("block","predict","observe")
+plot(df_PH_0519$observe, df_PH_0519$predict, xlab = "observe", ylab = "predict", main = "Plant Height (m)", xlim = c(1.0,2.0), ylim = c(1.0,2.0))
+
+write.csv(df_PH_0519, file.path(path_survey, "df_PH_0519.csv"))
+```
+
+
+#combine reflectance data with ground measurement
+```{r}
+df_0501_mean <- merge(ave_survey, extract_0501_mean, by = "block")
+df_0519_mean <- merge(ave_survey, extract_0519_mean, by = "block")
+
+df_0501_mean$savi <- savi(df_0501_mean)
+df_0501_mean$osavi <- osavi(df_0501_mean)
+df_0501_mean$msavi <- msavi(df_0501_mean)
+df_0501_mean$grvi <- grvi(df_0501_mean)
+df_0501_mean$mgrvi <- mgrvi(df_0501_mean)
+df_0501_mean$rgbvi <- rgbvi(df_0501_mean)
+
+df_0519_mean$savi <- savi(df_0519_mean)
+df_0519_mean$osavi <- osavi(df_0519_mean)
+df_0519_mean$msavi <- msavi(df_0519_mean)
+df_0519_mean$grvi <- grvi(df_0519_mean)
+df_0519_mean$mgrvi <- mgrvi(df_0519_mean)
+df_0519_mean$rgbvi <- rgbvi(df_0519_mean)
+
+
+```
+
+#add y as biomass per meter square
+```{r}
+df_0501_mean$aveweight <- df_0501_mean$weight/(pi*(df_0501_mean$width/100*2)^2)
+df_0519_mean$aveweight <- df_0519_mean$weight/(pi*(df_0519_mean$width/100*2)^2)
+
+```
+
+
+#model building 
+
+##linear model
+```{r}
+#0519
+##ndvi
+lm_ph_ndvi_0519 <- lm(df_0519_mean$weight~df_0519_mean$height+df_0519_mean$ndvi)
+summary(lm_ph_ndvi_0519)
+summary(lm(df_0519_mean$weight~predict(lm_ph_ndvi_0519)))
+RMSE(df_0519_mean$weight,predict(lm_ph_ndvi_0519))
+#plot(df_0519_mean$weight, predict(lm_ph_ndvi_0519))
+#abline(lm(df_0519_mean$weight~predict(lm_ph_ndvi_0519)))
+##savi
+lm_ph_savi_0519 <- lm(df_0519_mean$weight~df_0519_mean$height+df_0519_mean$savi)
+summary(lm_ph_savi_0519)
+summary(lm(df_0519_mean$weight~predict(lm_ph_savi_0519)))
+RMSE(df_0519_mean$weight,predict(lm_ph_savi_0519))
+##msavi
+lm_ph_msavi_0519 <- lm(df_0519_mean$weight~df_0519_mean$height+df_0519_mean$msavi)
+summary(lm_ph_msavi_0519)
+summary(lm(df_0519_mean$weight~predict(lm_ph_msavi_0519)))
+RMSE(df_0519_mean$weight,predict(lm_ph_msavi_0519))
+##osavi
+lm_ph_osavi_0519 <- lm(df_0519_mean$weight~df_0519_mean$height+df_0519_mean$osavi)
+summary(lm_ph_osavi_0519)
+summary(lm(df_0519_mean$weight~predict(lm_ph_osavi_0519)))
+RMSE(df_0519_mean$weight,predict(lm_ph_osavi_0519))
+##grvi
+lm_ph_grvi_0519 <- lm(df_0519_mean$weight~df_0519_mean$height+df_0519_mean$grvi)
+summary(lm_ph_grvi_0519)
+summary(lm(df_0519_mean$weight~predict(lm_ph_grvi_0519)))
+RMSE(df_0519_mean$weight,predict(lm_ph_grvi_0519))
+##mgrvi
+lm_ph_mgrvi_0519 <- lm(df_0519_mean$weight~df_0519_mean$height+df_0519_mean$mgrvi)
+summary(lm_ph_mgrvi_0519)
+summary(lm(df_0519_mean$weight~predict(lm_ph_mgrvi_0519)))
+RMSE(df_0519_mean$weight,predict(lm_ph_mgrvi_0519))
+##rgbvi
+lm_ph_rgbvi_0519 <- lm(df_0519_mean$weight~df_0519_mean$height+df_0519_mean$rgbvi)
+summary(lm_ph_rgbvi_0519)
+summary(lm(df_0519_mean$weight~predict(lm_ph_rgbvi_0519)))
+RMSE(df_0519_mean$weight,predict(lm_ph_rgbvi_0519))
+
+#0501
+##ndvi
+lm_ph_ndvi_0501 <- lm(df_0501_mean$weight~df_0501_mean$height+df_0501_mean$ndvi)
+summary(lm_ph_ndvi_0501)
+summary(lm(df_0501_mean$weight~predict(lm_ph_ndvi_0501)))
+RMSE(df_0501_mean$weight,predict(lm_ph_ndvi_0501))
+#plot(df_0501_mean$weight, predict(lm_ph_ndvi_0501))
+#abline(lm(df_0501_mean$weight~predict(lm_ph_ndvi_0501)))
+##savi
+lm_ph_savi_0501 <- lm(df_0501_mean$weight~df_0501_mean$height+df_0501_mean$savi)
+summary(lm_ph_savi_0501)
+summary(lm(df_0501_mean$weight~predict(lm_ph_savi_0501)))
+RMSE(df_0501_mean$weight,predict(lm_ph_savi_0501))
+##msavi
+lm_ph_msavi_0501 <- lm(df_0501_mean$weight~df_0501_mean$height+df_0501_mean$msavi)
+summary(lm_ph_msavi_0501)
+summary(lm(df_0501_mean$weight~predict(lm_ph_msavi_0501)))
+RMSE(df_0501_mean$weight,predict(lm_ph_msavi_0501))
+##osavi
+lm_ph_osavi_0501 <- lm(df_0501_mean$weight~df_0501_mean$height+df_0501_mean$osavi)
+summary(lm_ph_osavi_0501)
+summary(lm(df_0501_mean$weight~predict(lm_ph_osavi_0501)))
+RMSE(df_0501_mean$weight,predict(lm_ph_osavi_0501))
+##grvi
+lm_ph_grvi_0501 <- lm(df_0501_mean$weight~df_0501_mean$height+df_0501_mean$grvi)
+summary(lm_ph_grvi_0501)
+summary(lm(df_0501_mean$weight~predict(lm_ph_grvi_0501)))
+RMSE(df_0501_mean$weight,predict(lm_ph_grvi_0501))
+##mgrvi
+lm_ph_mgrvi_0501 <- lm(df_0501_mean$weight~df_0501_mean$height+df_0501_mean$mgrvi)
+summary(lm_ph_mgrvi_0501)
+summary(lm(df_0501_mean$weight~predict(lm_ph_mgrvi_0501)))
+RMSE(df_0501_mean$weight,predict(lm_ph_mgrvi_0501))
+##rgbvi
+lm_ph_rgbvi_0501 <- lm(df_0501_mean$weight~df_0501_mean$height+df_0501_mean$rgbvi)
+summary(lm_ph_rgbvi_0501)
+summary(lm(df_0501_mean$weight~predict(lm_ph_rgbvi_0501)))
+RMSE(df_0501_mean$weight,predict(lm_ph_rgbvi_0501))
+
+#plot the best one
+plot(df_0501_mean$weight, predict(lm_ph_msavi_0501), xlim = c(0.5,2.5), ylim = c(0.5,2.5), xlab = "Observe", ylab = "Predict", main = "Biomass Estimation")
+abline(lm(df_0501_mean$weight~predict(lm_ph_ndvi_0501)))
+
+```
+
+```{r}
+set.seed(777)
+tr_control <- trainControl(method="repeatedcv", number = 3, repeats = 3)
+model_rf_0501_mean <- train(x = df_0501_mean[,c(2:3,8:13,15:20)], y = df_0501_mean$aveweight, method = "rf", trControl = tr_control, importance = TRUE)
+model_rf_0501_mean_2 <- train(x = df_0501_mean[,c(2:3,8:13,15:20)], y = df_0501_mean$aveweight, method = "rf", trControl = tr_control, importance = TRUE, preProcess = c("scale","center"))
+
+plot(df_0501_mean$weight, predict(model_rf_0501_mean), xlab = "observed biomass", ylab = "predicted biomass", xlim = c(0.5,2.5), ylim = c(0.5,2.5))
+
+model_ridge_0501_mean <- train(x = df_0501_mean[,c(2:3,8:13,15:20)], y = df_0501_mean$weight, method = "ridge", trControl = tr_control, importance = TRUE)
+
+model_rf_0519_mean <- train(x = df_0519_mean[,c(2:3,8:13,15:20)], y = df_0519_mean$weight, method = "rf", trControl = tr_control, importance = TRUE)
+plot(df_0519_mean$weight, predict(model_rf_0519_mean), xlab = "observed biomass", ylab = "predicted biomass", xlim = c(0.5,2.5), ylim = c(0.5,2.5))
+
+
+
+model_rf_uav_total <- train(x=X_uav_filter1, y=df_uav$swp, method = "rf", preProcess = "scale", trControl = control_uav, importance = TRUE)
+
+```
+
+
+#Accuracy of bloom index
+```{r}
+flower_4class <- raster(file.path("F:/Rapeseed phynotyping/Processed results/20180225","otherfield_20180225_svm_4class"))
+plot(flower_4class)
+flower_4class[flower_4class!=1]=0
+plot(flower_4class)
+
+flower_BI <- raster(file.path("C:/Users/zt92/Desktop/rapeseed_phenotyping/layer stacks","rapeseed_022618_otherfield_bloomindex"))
+plot(flower_BI)
+flower_BI[flower_BI<=3.8]=0
+flower_BI[flower_BI>3.8]=1
+plot(flower_BI)
+
+flower_agree <- flower_4class+flower_BI
+flower_agree
+plot(flower_agree)
+
+#accuracy
+sum(values(flower_agree==2))/sum(values(flower_4class==1))
+```
+
